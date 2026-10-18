@@ -50,6 +50,15 @@ static void DX12_Device_Destroy(RHI_Device_Impl* device) {
     DX12_CommandList_Shutdown(&dxDevice->computeCommandList);
     DX12_CommandList_Shutdown(&dxDevice->transferCommandList);
 
+    if (dxDevice->transferFenceEvent) {
+        CloseHandle(dxDevice->transferFenceEvent);
+        dxDevice->transferFenceEvent = NULL;
+    }
+    if (dxDevice->transferFence) {
+        dxDevice->transferFence->lpVtbl->Release(dxDevice->transferFence);
+        dxDevice->transferFence = NULL;
+    }
+
     if (dxDevice->transferQueue) dxDevice->transferQueue->lpVtbl->Release(dxDevice->transferQueue);
     if (dxDevice->computeQueue)  dxDevice->computeQueue->lpVtbl->Release(dxDevice->computeQueue);
     if (dxDevice->graphicsQueue) dxDevice->graphicsQueue->lpVtbl->Release(dxDevice->graphicsQueue);
@@ -361,6 +370,17 @@ bool DX12_Device_Create(RHI_Instance instance, RHI_Device_Impl** device) {
     ok &= DX12_CommandList_Init(dxDevice->device, D3D12_COMMAND_LIST_TYPE_DIRECT,  &dxDevice->graphicsCommandList);
     ok &= DX12_CommandList_Init(dxDevice->device, D3D12_COMMAND_LIST_TYPE_COMPUTE, &dxDevice->computeCommandList);
     ok &= DX12_CommandList_Init(dxDevice->device, D3D12_COMMAND_LIST_TYPE_COPY,    &dxDevice->transferCommandList);
+
+    if (ok) {
+        HRESULT fenceHr = dxDevice->device->lpVtbl->CreateFence(
+            dxDevice->device, 0, D3D12_FENCE_FLAG_NONE, &IID_ID3D12Fence, (void**)&dxDevice->transferFence);
+        ok &= SUCCEEDED(fenceHr);
+    }
+    if (ok) {
+        dxDevice->transferFenceEvent = CreateEventEx(NULL, NULL, 0, EVENT_ALL_ACCESS);
+        ok &= dxDevice->transferFenceEvent != NULL;
+    }
+    dxDevice->nextTransferFenceValue = 1;
 
     if (!ok) {
         DX12_Device_Destroy(&dxDevice->base); // unwinds whatever partially succeeded

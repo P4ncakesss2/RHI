@@ -12,8 +12,90 @@ static void DX12_Buffer_Destroy(RHI_Buffer_Impl *self) {
     free(buffer);
 }
 
+static bool DX12_CopyBufferRegionAndWait(DX12Device* dxDevice,
+                                   ID3D12Resource* dstResource, size_t dstOffset,
+                                   ID3D12Resource* srcResource, size_t srcOffset,
+                                   size_t size) {
+    if (!dxDevice || !dstResource || !srcResource || size == 0) {
+        return false;
+    }
+
+    if (!DX12_CommandList_Begin(&dxDevice->transferCommandList, 0)) {
+        return false;
+    }
+
+    ID3D12GraphicsCommandList* list = dxDevice->transferCommandList.list;
+    list->lpVtbl->CopyBufferRegion(list, dstResource, dstOffset, srcResource, srcOffset, size);
+
+    DX12_CommandList_End(&dxDevice->transferCommandList, dxDevice->transferQueue);
+
+    UINT64 fenceValue = dxDevice->nextTransferFenceValue++;
+    HRESULT hr = dxDevice->transferQueue->lpVtbl->Signal(dxDevice->transferQueue, dxDevice->transferFence, fenceValue);
+    if (SUCCEEDED(hr)) {
+        if (dxDevice->transferFence->lpVtbl->GetCompletedValue(dxDevice->transferFence) < fenceValue) {
+            dxDevice->transferFence->lpVtbl->SetEventOnCompletion(dxDevice->transferFence, fenceValue, dxDevice->transferFenceEvent);
+            WaitForSingleObject(dxDevice->transferFenceEvent, INFINITE);
+        }
+    }
+
+    return SUCCEEDED(hr);
+}
+
+static bool DX12_Buffer_Upload(RHI_Device device, RHI_Buffer_Impl *impl, size_t offset, size_t size, const void *data) {
+    (void)device; 
+    if (!impl || !data || !size) {
+        return false;
+    }
+
+    DX12Buffer *buffer = (DX12Buffer *)impl;
+    if (offset > buffer->base.size || size > buffer->base.size - offset) {
+        return false;
+    }
+
+    if (!(buffer->base.usage & RHI_BUFFER_TRANSFER_SRC)) {
+        return false;
+    }
+
+    void *mapped = NULL;
+    D3D12_RANGE readRange = {0, 0};
+    HRESULT hr = buffer->resource->lpVtbl->Map(buffer->resource, 0, &readRange, &mapped);
+    if (FAILED(hr)) {
+        return false;
+    }
+    memcpy((uint8_t *)mapped + offset, data, size);
+    buffer->resource->lpVtbl->Unmap(buffer->resource, 0, NULL);
+    return true;
+}
+
+static bool DX12_Buffer_Copy(RHI_Device device,
+                       RHI_Buffer_Impl *dstImpl, size_t dstOffset,
+                       RHI_Buffer_Impl *srcImpl, size_t srcOffset,
+                       size_t size) {
+    if (!dstImpl || !srcImpl || !size) {
+        return false;
+    }
+
+    DX12Buffer *dst = (DX12Buffer *)dstImpl;
+    DX12Buffer *src = (DX12Buffer *)srcImpl;
+
+    if (dstOffset > dst->base.size || size > dst->base.size - dstOffset ||
+        srcOffset > src->base.size || size > src->base.size - srcOffset) {
+        return false;
+    }
+
+    RHI_Device_Impl **deviceImpl = RHI_Device_Get_Impl(device);
+    if (!deviceImpl || !*deviceImpl) {
+        return false;
+    }
+    DX12Device *dxDevice = (DX12Device *)*deviceImpl;
+
+    return DX12_CopyBufferRegionAndWait(dxDevice, dst->resource, dstOffset, src->resource, srcOffset, size);
+}
+
 static const RHI_Buffer_Vtable dx12BufferVtable = {
     .destroy = DX12_Buffer_Destroy,
+    .upload = DX12_Buffer_Upload,
+    .copy = DX12_Buffer_Copy,
 };
 
 bool DX12_Buffer_Create(RHI_Device device, const RHI_BufferDesc *desc, RHI_Buffer_Impl **out) {
@@ -32,8 +114,10 @@ bool DX12_Buffer_Create(RHI_Device device, const RHI_BufferDesc *desc, RHI_Buffe
     buffer->base.size = desc->size;
     buffer->base.usage = desc->usage;
 
+    const bool isCpuStaging = (desc->usage & RHI_BUFFER_TRANSFER_SRC) != 0;
+
     D3D12_HEAP_PROPERTIES heapProperties = {0};
-    heapProperties.Type = D3D12_HEAP_TYPE_UPLOAD;
+    heapProperties.Type = isCpuStaging ? D3D12_HEAP_TYPE_UPLOAD : D3D12_HEAP_TYPE_DEFAULT;
     heapProperties.CreationNodeMask = 1;
     heapProperties.VisibleNodeMask = 1;
 
@@ -46,27 +130,17 @@ bool DX12_Buffer_Create(RHI_Device device, const RHI_BufferDesc *desc, RHI_Buffe
     resourceDesc.SampleDesc.Count = 1;
     resourceDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 
+    const D3D12_RESOURCE_STATES initialState = isCpuStaging ? D3D12_RESOURCE_STATE_GENERIC_READ
+                                                              : D3D12_RESOURCE_STATE_COMMON;
+
     HRESULT hr = dxDevice->device->lpVtbl->CreateCommittedResource(
         dxDevice->device, &heapProperties, D3D12_HEAP_FLAG_NONE, &resourceDesc,
-        D3D12_RESOURCE_STATE_GENERIC_READ, NULL, &IID_ID3D12Resource,
+        initialState, NULL, &IID_ID3D12Resource,
         (void **)&buffer->resource
     );
     if (FAILED(hr)) {
         free(buffer);
         return false;
-    }
-
-    if (desc->initialData) {
-        void *mapped = NULL;
-        D3D12_RANGE readRange = {0, 0};
-        hr = buffer->resource->lpVtbl->Map(buffer->resource, 0, &readRange, &mapped);
-        if (FAILED(hr)) {
-            buffer->resource->lpVtbl->Release(buffer->resource);
-            free(buffer);
-            return false;
-        }
-        memcpy(mapped, desc->initialData, desc->size);
-        buffer->resource->lpVtbl->Unmap(buffer->resource, 0, NULL);
     }
 
     buffer->vertexView.BufferLocation = buffer->resource->lpVtbl->GetGPUVirtualAddress(buffer->resource);

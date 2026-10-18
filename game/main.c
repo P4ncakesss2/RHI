@@ -87,16 +87,39 @@ int main() {
     const uint16_t indices[] = {0, 1, 2};
     
     RHI_Buffer vertexBuffer = RHI_Buffer_Create(instance, device, &(RHI_BufferDesc){
-        .size = sizeof(vertices), .usage = RHI_BUFFER_VERTEX, .initialData = vertices,
+        .size = sizeof(vertices), .usage = RHI_BUFFER_VERTEX | RHI_BUFFER_TRANSFER_DST,
     });
     RHI_Buffer indexBuffer = RHI_Buffer_Create(instance, device, &(RHI_BufferDesc){
-        .size = sizeof(indices), .usage = RHI_BUFFER_INDEX, .initialData = indices,
+        .size = sizeof(indices), .usage = RHI_BUFFER_INDEX | RHI_BUFFER_TRANSFER_DST,
     });
-    
+
     if (!RHI_Buffer_IsValid(vertexBuffer) || !RHI_Buffer_IsValid(indexBuffer)) {
         printf("Failed to create triangle buffers\n");
         if (RHI_Buffer_IsValid(vertexBuffer)) RHI_Buffer_Destroy(vertexBuffer);
         if (RHI_Buffer_IsValid(indexBuffer)) RHI_Buffer_Destroy(indexBuffer);
+        goto cleanup_swapchain;
+    }
+
+    RHI_Buffer vertexStaging = RHI_Buffer_Create(instance, device, &(RHI_BufferDesc){
+        .size = sizeof(vertices), .usage = RHI_BUFFER_TRANSFER_SRC,
+    });
+    RHI_Buffer indexStaging = RHI_Buffer_Create(instance, device, &(RHI_BufferDesc){
+        .size = sizeof(indices), .usage = RHI_BUFFER_TRANSFER_SRC,
+    });
+
+    bool stagingOk = RHI_Buffer_IsValid(vertexStaging) && RHI_Buffer_IsValid(indexStaging);
+    stagingOk = stagingOk && RHI_Buffer_Upload(instance, device, vertexStaging, 0, sizeof(vertices), vertices);
+    stagingOk = stagingOk && RHI_Buffer_Upload(instance, device, indexStaging, 0, sizeof(indices), indices);
+    stagingOk = stagingOk && RHI_Buffer_Copy(instance, device, vertexBuffer, 0, vertexStaging, 0, sizeof(vertices));
+    stagingOk = stagingOk && RHI_Buffer_Copy(instance, device, indexBuffer, 0, indexStaging, 0, sizeof(indices));
+
+    if (RHI_Buffer_IsValid(vertexStaging)) RHI_Buffer_Destroy(vertexStaging);
+    if (RHI_Buffer_IsValid(indexStaging)) RHI_Buffer_Destroy(indexStaging);
+
+    if (!stagingOk) {
+        printf("Failed to upload triangle buffers\n");
+        RHI_Buffer_Destroy(indexBuffer);
+        RHI_Buffer_Destroy(vertexBuffer);
         goto cleanup_swapchain;
     }
 

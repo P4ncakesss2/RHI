@@ -3,6 +3,7 @@
 #include "rhi/handles.h"
 #include <stddef.h>
 #include <stdint.h>
+#include <stdbool.h>
 
 typedef enum RHI_BufferUsage { 
     RHI_BUFFER_VERTEX       = 1 << 0,
@@ -13,13 +14,17 @@ typedef enum RHI_BufferUsage {
     RHI_BUFFER_TRANSFER_DST = 1 << 5
 } RHI_BufferUsage;
 
-typedef struct RHI_BufferDesc { 
-    size_t size; 
-    uint32_t usage; 
-    const void* initialData; 
+typedef struct RHI_BufferDesc {
+    size_t size;
+    uint32_t usage;
 } RHI_BufferDesc;
 
 RHI_Buffer RHI_Buffer_Create(RHI_Instance instance, RHI_Device device, const RHI_BufferDesc* desc);
 void RHI_Buffer_Destroy(RHI_Buffer buffer);
 size_t RHI_Buffer_Get_Size(RHI_Buffer buffer);
+bool RHI_Buffer_Upload(RHI_Instance instance, RHI_Device device, RHI_Buffer buffer, size_t offset, size_t size, const void* data);
+bool RHI_Buffer_Copy(RHI_Instance instance, RHI_Device device,
+                      RHI_Buffer dst, size_t dstOffset,
+                      RHI_Buffer src, size_t srcOffset,
+                      size_t size);
 #endif

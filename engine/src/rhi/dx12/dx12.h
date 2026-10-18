@@ -59,8 +59,15 @@ typedef struct DX12Device {
 
     DX12CommandList       graphicsCommandList;
     DX12CommandList       computeCommandList;
-    DX12CommandList       transferCommandList; 
-    
+    DX12CommandList       transferCommandList;
+
+    /* Synchronizes one-off uploads submitted to transferQueue (e.g. staging-buffer   */
+    /* copies). Uploads are issued and waited on synchronously, so a single fence/    */
+    /* event pair is enough - see DX12_Buffer_Copy in dx12_resources.c.               */
+    ID3D12Fence*           transferFence;
+    HANDLE                 transferFenceEvent;
+    UINT64                 nextTransferFenceValue;
+
     DX12Swapchain*        boundSwapchain;
     const RHI_RenderPass* activeRenderPass;
 } DX12Device;
@@ -113,8 +120,8 @@ bool DX12_Image_Create(RHI_Device device, const RHI_ImageDesc* desc, RHI_Image_I
 bool DX12_Buffer_Create(RHI_Device device, const RHI_BufferDesc* desc, RHI_Buffer_Impl** out);
 bool DX12_Sampler_Create(RHI_Device device, const RHI_SamplerDesc* desc, RHI_Sampler_Impl** out);
 bool DX12_Buffer_Create(RHI_Device device, const RHI_BufferDesc* desc, RHI_Buffer_Impl** out);
-
-bool DX12_Image_Create(RHI_Device device, const RHI_ImageDesc* desc, RHI_Image_Impl** outImage);
+bool DX12_Image_Create(RHI_Device device, const RHI_ImageDesc* desc, RHI_Image_Impl** out);
 DXGI_FORMAT DX12_ImageFormat_To_DXGI(RHI_ImageFormat format);
+
 
 #endif

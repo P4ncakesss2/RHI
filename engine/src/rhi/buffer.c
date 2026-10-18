@@ -41,6 +41,43 @@ RHI_Buffer RHI_Buffer_Create(RHI_Instance instance, RHI_Device device, const RHI
     return h;
 }
 
+bool RHI_Buffer_Upload(RHI_Instance instance, RHI_Device device, RHI_Buffer h,
+                        size_t offset, size_t size, const void* data) {
+    (void)instance;
+    if (!data || !size) {
+        return false;
+    }
+
+    RHI_Buffer_Impl** p = RHI_Buffer_Get_Impl(h);
+    if (!p || !*p || !(*p)->vtable->upload) {
+        return false;
+    }
+
+    return (*p)->vtable->upload(device, *p, offset, size, data);
+}
+
+bool RHI_Buffer_Copy(RHI_Instance instance, RHI_Device device,
+                      RHI_Buffer dst, size_t dstOffset,
+                      RHI_Buffer src, size_t srcOffset,
+                      size_t size) {
+    (void)instance;
+    if (!size) {
+        return false;
+    }
+
+    RHI_Buffer_Impl** dstImpl = RHI_Buffer_Get_Impl(dst);
+    RHI_Buffer_Impl** srcImpl = RHI_Buffer_Get_Impl(src);
+    if (!dstImpl || !*dstImpl || !srcImpl || !*srcImpl) {
+        return false;
+    }
+
+    if (!(*dstImpl)->vtable->copy) {
+        return false;
+    }
+
+    return (*dstImpl)->vtable->copy(device, *dstImpl, dstOffset, *srcImpl, srcOffset, size);
+}
+
 void RHI_Buffer_Destroy(RHI_Buffer h) {
     RHI_Buffer_Impl** p = RHI_Buffer_Get_Impl(h);
     if (!p || !*p) return;

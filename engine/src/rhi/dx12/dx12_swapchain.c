@@ -48,7 +48,7 @@ static void DX12_Swapchain_WaitForFenceValue(DX12Swapchain* sc, UINT64 value) {
     }
 }
 
-static bool DX12_Swapchain_CreateRTVs(DX12Swapchain* sc) {
+static bool DX12_Swapchain_CreateRTVs(DX12Swapchain* sc, bool initialAllocation) {
     DX12Device* dxDevice = sc->device;
 
     D3D12_DESCRIPTOR_HEAP_DESC heapDesc = {0};
@@ -90,7 +90,11 @@ static bool DX12_Swapchain_CreateRTVs(DX12Swapchain* sc) {
         sc->images[i].owner = sc;
         sc->images[i].index = i;
         sc->images[i].resource = sc->backbuffers[i];
-        sc->imageHandles[i] = RHI_Image_Register(&sc->images[i].base);
+        
+        // Allocate handles only on initial creation; reuse them on resizes!
+        if (initialAllocation) {
+            sc->imageHandles[i] = RHI_Image_Register(&sc->images[i].base);
+        }
     }
 
     return true;
@@ -98,10 +102,7 @@ static bool DX12_Swapchain_CreateRTVs(DX12Swapchain* sc) {
 
 static void DX12_Swapchain_ReleaseRTVs(DX12Swapchain* sc) {
     for (UINT i = 0; i < DX12_FRAME_COUNT; ++i) {
-        if (RHI_Image_IsValid(sc->imageHandles[i])) {
-            RHI_Image_Unregister(sc->imageHandles[i]);
-            sc->imageHandles[i] = RHI_Image_Invalid();
-        }
+        // Do NOT unregister/destroy handles here so we can reuse them across resizes.
         if (sc->backbuffers[i]) {
             sc->backbuffers[i]->lpVtbl->Release(sc->backbuffers[i]);
             sc->backbuffers[i] = NULL;
@@ -123,6 +124,15 @@ static void DX12_Swapchain_Destroy(RHI_Swapchain_Impl* self) {
     DX12_Swapchain_WaitForFenceValue(sc, lastSubmittedFence);
 
     DX12_Swapchain_DestroyFrameSync(sc);
+    
+    // Clean up handles permanently only when the swapchain is completely destroyed
+    for (UINT i = 0; i < DX12_FRAME_COUNT; ++i) {
+        if (RHI_Image_IsValid(sc->imageHandles[i])) {
+            RHI_Image_Unregister(sc->imageHandles[i]);
+            sc->imageHandles[i] = RHI_Image_Invalid();
+        }
+    }
+
     DX12_Swapchain_ReleaseRTVs(sc);
     if (sc->swapchain) {
         sc->swapchain->lpVtbl->Release(sc->swapchain);
@@ -148,7 +158,7 @@ static bool DX12_Swapchain_Resize(RHI_Swapchain_Impl* self, uint32_t width, uint
 
     sc->width = width;
     sc->height = height;
-    if (!DX12_Swapchain_CreateRTVs(sc)) {
+    if (!DX12_Swapchain_CreateRTVs(sc, false)) { // false = reuse existing handles
         return false;
     }
     sc->currentBackbufferIndex = sc->swapchain->lpVtbl->GetCurrentBackBufferIndex(sc->swapchain);
@@ -246,7 +256,7 @@ bool DX12_Swapchain_Create(RHI_Device device, Window* window, RHI_Swapchain_Impl
         return false;
     }
 
-    if (!DX12_Swapchain_CreateRTVs(sc)) {
+    if (!DX12_Swapchain_CreateRTVs(sc, true)) { 
         sc->swapchain->lpVtbl->Release(sc->swapchain);
         free(sc);
         return false;
