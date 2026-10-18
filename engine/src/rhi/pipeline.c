@@ -7,6 +7,9 @@
 #ifdef RHI_BACKEND_DX12_AVAILABLE
 #include "dx12/dx12.h"
 #endif
+#ifdef RHI_BACKEND_VULKAN_AVAILABLE
+#include "vulkan/vulkan_backend.h"
+#endif
 
 DEFINE_HANDLE_POOL(RHI_PipelineLayout, RHI_PipelineLayout_Impl*);
 static RHI_PipelineLayoutPool s_pipelineLayouts;
@@ -28,8 +31,18 @@ RHI_PipelineLayout RHI_PipelineLayout_Create(RHI_Instance instance, RHI_Device d
             result = false;
 #endif
             break;
+        case RHI_BACKEND_VULKAN:
+#ifdef RHI_BACKEND_VULKAN_AVAILABLE
+            result = Vulkan_PipelineLayout_Create(device, desc, impl);
+#endif
+            break;
         default:
             result = false;
+            break;
+        case RHI_BACKEND_VULKAN:
+#ifdef RHI_BACKEND_VULKAN_AVAILABLE
+            result = Vulkan_Pipeline_Create(device, desc, impl);
+#endif
             break;
     }
 

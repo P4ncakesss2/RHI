@@ -63,9 +63,23 @@ if(WIN32)
     )
 endif()
 
-# Vulkan
+# Vulkan (Volk loader and VMA allocator are kept as submodules)
 if(WIN32 OR UNIX)
-    target_compile_definitions(engine PUBLIC
-        RHI_BACKEND_VULKAN_AVAILABLE
-    )
+    find_package(Vulkan QUIET)
+    if(Vulkan_FOUND)
+        target_sources(engine PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}/external/volk/volk.c"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/rhi/vulkan/vma_impl.c"
+        )
+        target_include_directories(engine PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}/external/volk"
+            "${CMAKE_CURRENT_SOURCE_DIR}/external/VulkanMemoryAllocator/include"
+            ${Vulkan_INCLUDE_DIRS}
+        )
+        target_link_libraries(engine PUBLIC Vulkan::Vulkan)
+        target_compile_definitions(engine PUBLIC
+            RHI_BACKEND_VULKAN_AVAILABLE
+            VK_NO_PROTOTYPES
+        )
+    endif()
 endif()

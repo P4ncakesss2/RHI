@@ -8,10 +8,23 @@ struct VSOutput {
     float3 color    : COLOR;
 };
 
+cbuffer Transform : register(b31) {
+    float2 offset;
+    float rotation;
+    float _pad;
+};
+
 [shader("vertex")]
 VSOutput vertexMain(VSInput input) {
+    float c = cos(rotation);
+    float s = sin(rotation);
+    float2 rotated = float2(
+        input.position.x * c - input.position.y * s,
+        input.position.x * s + input.position.y * c
+    );
+
     VSOutput output;
-    output.position = float4(input.position, 0.0, 1.0);
+    output.position = float4(rotated + offset, 0.0, 1.0);
     output.color = input.color;
     return output;
 }

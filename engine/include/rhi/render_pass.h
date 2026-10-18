@@ -14,6 +14,10 @@ typedef struct RHI_Scissor {
 
 typedef struct RHI_RenderPass {
     RHI_Image colorTarget;
+    uint32_t colorAttachmentCount;
+    RHI_Image colorTargets[8];
+    uint32_t resolveAttachmentCount;
+    RHI_Image resolveTargets[8];
     bool hasDepthTarget;
     RHI_Image depthTarget;
     bool hasStencilTarget;

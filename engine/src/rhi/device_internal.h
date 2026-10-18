@@ -4,6 +4,8 @@
 #include "rhi/render_pass.h"
 #include "rhi/pipeline_internal.h"
 #include "buffer_internal.h"
+#include "rhi/image_internal.h"
+#include "rhi/sampler_internal.h"
 #include <stdint.h>
 
 typedef struct RHI_Device_Impl RHI_Device_Impl;
@@ -18,7 +20,13 @@ typedef struct {
     bool (*bindVertexBuffer)(RHI_Device_Impl* self, uint32_t slot, RHI_Buffer_Impl* buffer, uint32_t stride);
     bool (*bindIndexBuffer)(RHI_Device_Impl* self, RHI_Buffer_Impl* buffer, bool index32Bit);
     void (*drawIndexed)(RHI_Device_Impl* self, uint32_t indexCount, uint32_t instanceCount, uint32_t firstIndex, int32_t vertexOffset, uint32_t firstInstance);
+    bool (*bindBuffer)(RHI_Device_Impl* self, uint32_t binding, RHI_Buffer_Impl* buffer);
+    bool (*bindImage)(RHI_Device_Impl* self, uint32_t binding, RHI_Image_Impl* image);
+    bool (*bindSampler)(RHI_Device_Impl* self, uint32_t binding, RHI_Sampler_Impl* sampler);
+    bool (*bindPushConstants)(RHI_Device_Impl* self, uint32_t offset, uint32_t size, const void* data);
     void (*endFrame)(RHI_Device_Impl* self);
+    bool (*supports)(RHI_Device_Impl* self, RHI_DeviceFeature feature);
+    bool (*supportsImageSampleCount)(RHI_Device_Impl* self, RHI_ImageFormat format, uint32_t sampleCount);
 } RHI_Device_Vtable;
 
 struct RHI_Device_Impl {

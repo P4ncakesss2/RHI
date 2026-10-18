@@ -6,6 +6,9 @@
 #ifdef RHI_BACKEND_DX12_AVAILABLE
 #include "dx12/dx12.h"
 #endif
+#ifdef RHI_BACKEND_VULKAN_AVAILABLE
+#include "vulkan/vulkan_backend.h"
+#endif
 
 DEFINE_HANDLE_POOL(RHI_Image, RHI_Image_Impl*);
 
@@ -43,6 +46,13 @@ RHI_ImageInfo RHI_Image_Get_Info(RHI_Image imageHandle) {
     return imageImpl && *imageImpl ? (*imageImpl)->info : (RHI_ImageInfo){0};
 }
 
+bool RHI_Image_Resize(RHI_Device device, RHI_Image imageHandle, uint32_t width, uint32_t height) {
+    if (!width || !height) return false;
+    RHI_Image_Impl** imageImpl = RHI_Image_Get_Impl(imageHandle);
+    return imageImpl && *imageImpl && (*imageImpl)->vtable->resize &&
+           (*imageImpl)->vtable->resize(device, *imageImpl, width, height);
+}
+
 RHI_Image RHI_Image_Create(RHI_Instance instance, RHI_Device device, const RHI_ImageDesc* desc) {
     if (!desc || !desc->width || !desc->height) {
         return RHI_Image_Invalid();
@@ -56,6 +66,11 @@ RHI_Image RHI_Image_Create(RHI_Instance instance, RHI_Device device, const RHI_I
         case RHI_BACKEND_DX12:
 #ifdef RHI_BACKEND_DX12_AVAILABLE
             ok = DX12_Image_Create(device, desc, imageImpl);
+#endif
+            break;
+        case RHI_BACKEND_VULKAN:
+#ifdef RHI_BACKEND_VULKAN_AVAILABLE
+            ok = Vulkan_Image_Create(device, desc, imageImpl);
 #endif
             break;
         default:
@@ -75,4 +90,12 @@ void RHI_Image_Destroy(RHI_Image imageHandle) {
     if (imageImpl && *imageImpl && (*imageImpl)->vtable) {
         RHI_Image_Unregister(imageHandle);
     }
+}
+
+bool RHI_Image_Upload(RHI_Instance instance, RHI_Device device, RHI_Image image,
+                      uint32_t mipLevel, const void* data, size_t dataSize) {
+    (void)instance;
+    RHI_Image_Impl** impl = RHI_Image_Get_Impl(image);
+    return impl && *impl && (*impl)->vtable->upload &&
+           (*impl)->vtable->upload(device, *impl, mipLevel, data, dataSize);
 }

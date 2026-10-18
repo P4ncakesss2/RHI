@@ -1,3 +1,9 @@
 [submodule "engine/external/glfw"]
 	path = engine/external/glfw
 	url = https://github.com/glfw/glfw
+[submodule "engine/external/volk"]
+	path = engine/external/volk
+	url = https://github.com/zeux/volk.git
+[submodule "engine/external/VulkanMemoryAllocator"]
+	path = engine/external/VulkanMemoryAllocator
+	url = https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git

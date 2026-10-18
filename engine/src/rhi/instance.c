@@ -6,6 +6,9 @@
 #ifdef RHI_BACKEND_DX12_AVAILABLE
 #include "dx12/dx12.h"
 #endif
+#ifdef RHI_BACKEND_VULKAN_AVAILABLE
+#include "vulkan/vulkan_backend.h"
+#endif
 
 DEFINE_HANDLE_POOL(RHI_Instance, RHI_Instance_Impl*);
 static RHI_InstancePool s_instances;
@@ -18,6 +21,8 @@ RHI_Instance RHI_Instance_Create(RHI_Backend backend, bool debug) {
     if (selected_backend == RHI_BACKEND_AUTO) {
 #ifdef RHI_BACKEND_DX12_AVAILABLE
         selected_backend = RHI_BACKEND_DX12;
+#elif defined(RHI_BACKEND_VULKAN_AVAILABLE)
+            selected_backend = RHI_BACKEND_VULKAN;
 #else
         selected_backend = RHI_BACKEND_AUTO;
 #endif
@@ -30,6 +35,11 @@ RHI_Instance RHI_Instance_Create(RHI_Backend backend, bool debug) {
             result = DX12_Instance_Create(debug, impl);
 #else
             result = false;
+#endif
+            break;
+        case RHI_BACKEND_VULKAN:
+#ifdef RHI_BACKEND_VULKAN_AVAILABLE
+            result = Vulkan_Instance_Create(debug, impl);
 #endif
             break;
         default:

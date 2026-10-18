@@ -1,12 +1,18 @@
 #include "rhi/device.h"
-#include "rhi/device_internal.h" 
+#include "rhi/device_internal.h"
 #include "rhi/pipeline_internal.h"
+#include "rhi/image.h"
+#include "rhi/sampler_internal.h"
 #include "core/handle_internal.h"
 #include "rhi/instance.h"
+#include "rhi/image.h"
 #include <stdbool.h>
 
 #ifdef RHI_BACKEND_DX12_AVAILABLE
 #include "dx12/dx12.h"
+#endif
+#ifdef RHI_BACKEND_VULKAN_AVAILABLE
+#include "vulkan/vulkan_backend.h"
 #endif
 
 DEFINE_HANDLE_POOL(RHI_Device, RHI_Device_Impl*);
@@ -26,6 +32,11 @@ RHI_Device RHI_Device_Create(RHI_Instance instance) {
             result = false;
 #endif
             break;
+        case RHI_BACKEND_VULKAN:
+#ifdef RHI_BACKEND_VULKAN_AVAILABLE
+            result = Vulkan_Device_Create(instance, impl);
+#endif
+            break;
         default:
             result = false;
             break;
@@ -37,6 +48,18 @@ RHI_Device RHI_Device_Create(RHI_Instance instance) {
     }
 
     return handle;
+}
+
+bool RHI_Device_Supports(RHI_Device handle, RHI_DeviceFeature feature) {
+    RHI_Device_Impl** impl = RHI_DevicePool_Resolve(&s_devices, handle);
+    return impl && *impl && (*impl)->vtable->supports && (*impl)->vtable->supports(*impl, feature);
+}
+
+bool RHI_Device_Supports_Image_Sample_Count(RHI_Device handle, RHI_ImageFormat format,
+                                            uint32_t sampleCount) {
+    RHI_Device_Impl** impl = RHI_DevicePool_Resolve(&s_devices, handle);
+    return impl && *impl && (*impl)->vtable->supportsImageSampleCount &&
+           (*impl)->vtable->supportsImageSampleCount(*impl, format, sampleCount);
 }
 
 void RHI_Device_Destroy(RHI_Device handle) {
@@ -115,7 +138,29 @@ void RHI_Device_Draw_Indexed(RHI_Device device, uint32_t n, uint32_t instances, 
     }
 }
 
-// internal
+bool RHI_Device_Bind_Buffer(RHI_Device device, uint32_t binding, RHI_Buffer buffer) {
+    RHI_Device_Impl** d = RHI_DevicePool_Resolve(&s_devices, device);
+    RHI_Buffer_Impl** b = RHI_Buffer_Get_Impl(buffer);
+    return d && *d && b && *b && (*d)->vtable->bindBuffer && (*d)->vtable->bindBuffer(*d, binding, *b);
+}
+
+bool RHI_Device_Bind_Image(RHI_Device device, uint32_t binding, RHI_Image image) {
+    RHI_Device_Impl** d = RHI_DevicePool_Resolve(&s_devices, device);
+    RHI_Image_Impl** i = RHI_Image_Get_Impl(image);
+    return d && *d && i && *i && (*d)->vtable->bindImage && (*d)->vtable->bindImage(*d, binding, *i);
+}
+
+bool RHI_Device_Bind_Sampler(RHI_Device device, uint32_t binding, RHI_Sampler sampler) {
+    RHI_Device_Impl** d = RHI_DevicePool_Resolve(&s_devices, device);
+    RHI_Sampler_Impl** s = RHI_Sampler_Get_Impl(sampler);
+    return d && *d && s && *s && (*d)->vtable->bindSampler && (*d)->vtable->bindSampler(*d, binding, *s);
+}
+
+bool RHI_Device_Bind_Push_Constants(RHI_Device device, uint32_t offset, uint32_t size, const void* data) {
+    RHI_Device_Impl** d = RHI_DevicePool_Resolve(&s_devices, device);
+    return d && *d && (*d)->vtable->bindPushConstants && (*d)->vtable->bindPushConstants(*d, offset, size, data);
+}
+
 RHI_Device_Impl** RHI_Device_Get_Impl(RHI_Device handle) {
     return  RHI_DevicePool_Resolve(&s_devices, handle);
 }

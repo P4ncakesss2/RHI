@@ -8,6 +8,9 @@
 #ifdef RHI_BACKEND_DX12_AVAILABLE
 #include "dx12/dx12.h"
 #endif
+#ifdef RHI_BACKEND_VULKAN_AVAILABLE
+#include "vulkan/vulkan_backend.h"
+#endif
 
 DEFINE_HANDLE_POOL(RHI_Swapchain, RHI_Swapchain_Impl*);
 static RHI_SwapchainPool s_swapchains;
@@ -25,6 +28,11 @@ RHI_Swapchain RHI_Swapchain_Create(RHI_Instance instance, RHI_Device device, Win
             result = DX12_Swapchain_Create(device, window, impl);
 #else
             result = false;
+#endif
+            break;
+        case RHI_BACKEND_VULKAN:
+#ifdef RHI_BACKEND_VULKAN_AVAILABLE
+            result = Vulkan_Swapchain_Create(device, window, impl);
 #endif
             break;
         default:

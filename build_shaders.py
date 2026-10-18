@@ -25,6 +25,13 @@ SHADERS = [
             ("fragmentMain", "fragment", "ps_6_0"),
         ],
     },
+    {
+        "source": "fullscreen.slang",
+        "entries": [
+            ("vertexMain", "vertex", "vs_6_0"),
+            ("fragmentMain", "fragment", "ps_6_0"),
+        ],
+    },
 ]
 
 def compile_entry(src: Path, entry_name: str, stage: str, profile: str) -> bool:

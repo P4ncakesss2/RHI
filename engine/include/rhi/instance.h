@@ -6,6 +6,7 @@
 
 typedef enum RHI_Backend {
     RHI_BACKEND_DX12,
+    RHI_BACKEND_VULKAN,
     RHI_BACKEND_AUTO
 } RHI_Backend;
 

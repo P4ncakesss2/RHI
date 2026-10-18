@@ -7,8 +7,30 @@
 #include <stddef.h>
 #include <stdint.h>
 
+typedef enum RHI_BindingType {
+    RHI_BINDING_UNIFORM_BUFFER,
+    RHI_BINDING_STORAGE_BUFFER,
+    RHI_BINDING_SAMPLED_IMAGE,
+    RHI_BINDING_SAMPLER,
+    RHI_BINDING_STORAGE_BUFFER_UAV,
+    RHI_BINDING_STORAGE_IMAGE,
+} RHI_BindingType;
+
+typedef uint32_t RHI_ShaderStageMask;
+
+#define RHI_PIPELINE_MAX_BINDINGS 16
+
 typedef struct {
-    // TODO
+    uint32_t binding;
+    RHI_BindingType type;
+    RHI_ShaderStageMask stageMask;
+} RHI_PipelineBinding;
+
+typedef struct {
+    const RHI_PipelineBinding *bindings;
+    uint32_t bindingCount;
+    uint32_t pushConstantSize;
+    RHI_ShaderStageMask pushConstantStages;
 } RHI_PipelineLayoutDesc;
 
 RHI_PipelineLayout RHI_PipelineLayout_Create(RHI_Instance instance, RHI_Device device, const RHI_PipelineLayoutDesc *desc);

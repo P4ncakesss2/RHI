@@ -3,6 +3,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
 
 static void DX12_Buffer_Destroy(RHI_Buffer_Impl *self) {
     DX12Buffer *buffer = (DX12Buffer *)self;
@@ -15,30 +16,62 @@ static void DX12_Buffer_Destroy(RHI_Buffer_Impl *self) {
 static bool DX12_CopyBufferRegionAndWait(DX12Device* dxDevice,
                                    ID3D12Resource* dstResource, size_t dstOffset,
                                    ID3D12Resource* srcResource, size_t srcOffset,
-                                   size_t size) {
+                                   size_t size, D3D12_RESOURCE_STATES* dstState,
+                                   D3D12_RESOURCE_STATES* srcState) {
     if (!dxDevice || !dstResource || !srcResource || size == 0) {
+        return false;
+    }
+    if (*dstState != D3D12_RESOURCE_STATE_COMMON ||
+        (*srcState != D3D12_RESOURCE_STATE_GENERIC_READ && *srcState != D3D12_RESOURCE_STATE_COMMON)) {
         return false;
     }
 
     if (!DX12_CommandList_Begin(&dxDevice->transferCommandList, 0)) {
+        fprintf(stderr, "DX12_CopyBufferRegionAndWait: failed to begin transfer command list\n");
         return false;
     }
-
     ID3D12GraphicsCommandList* list = dxDevice->transferCommandList.list;
+    D3D12_RESOURCE_BARRIER barrier = {0};
+    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    barrier.Transition.pResource = dstResource;
+    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
+    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    list->lpVtbl->ResourceBarrier(list, 1, &barrier);
+    if (*srcState == D3D12_RESOURCE_STATE_COMMON) {
+        barrier.Transition.pResource = srcResource;
+        barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
+        barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+        list->lpVtbl->ResourceBarrier(list, 1, &barrier);
+    }
     list->lpVtbl->CopyBufferRegion(list, dstResource, dstOffset, srcResource, srcOffset, size);
+    barrier.Transition.pResource = dstResource;
+    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COMMON;
+    list->lpVtbl->ResourceBarrier(list, 1, &barrier);
+    if (*srcState == D3D12_RESOURCE_STATE_COMMON) {
+        barrier.Transition.pResource = srcResource;
+        barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
+        barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COMMON;
+        list->lpVtbl->ResourceBarrier(list, 1, &barrier);
+    }
 
     DX12_CommandList_End(&dxDevice->transferCommandList, dxDevice->transferQueue);
 
     UINT64 fenceValue = dxDevice->nextTransferFenceValue++;
     HRESULT hr = dxDevice->transferQueue->lpVtbl->Signal(dxDevice->transferQueue, dxDevice->transferFence, fenceValue);
-    if (SUCCEEDED(hr)) {
-        if (dxDevice->transferFence->lpVtbl->GetCompletedValue(dxDevice->transferFence) < fenceValue) {
-            dxDevice->transferFence->lpVtbl->SetEventOnCompletion(dxDevice->transferFence, fenceValue, dxDevice->transferFenceEvent);
-            WaitForSingleObject(dxDevice->transferFenceEvent, INFINITE);
-        }
+    if (FAILED(hr)) {
+        fprintf(stderr, "DX12_CopyBufferRegionAndWait: Signal failed: hr=0x%08lX\n", (unsigned long)hr);
+        DX12_DumpDebugMessages(dxDevice->device);
+        return false;
     }
 
-    return SUCCEEDED(hr);
+    if (dxDevice->transferFence->lpVtbl->GetCompletedValue(dxDevice->transferFence) < fenceValue) {
+        dxDevice->transferFence->lpVtbl->SetEventOnCompletion(dxDevice->transferFence, fenceValue, dxDevice->transferFenceEvent);
+        WaitForSingleObject(dxDevice->transferFenceEvent, INFINITE);
+    }
+
+    return true;
 }
 
 static bool DX12_Buffer_Upload(RHI_Device device, RHI_Buffer_Impl *impl, size_t offset, size_t size, const void *data) {
@@ -49,10 +82,12 @@ static bool DX12_Buffer_Upload(RHI_Device device, RHI_Buffer_Impl *impl, size_t 
 
     DX12Buffer *buffer = (DX12Buffer *)impl;
     if (offset > buffer->base.size || size > buffer->base.size - offset) {
+        fprintf(stderr, "DX12_Buffer_Upload: offset/size out of bounds\n");
         return false;
     }
 
     if (!(buffer->base.usage & RHI_BUFFER_TRANSFER_SRC)) {
+        fprintf(stderr, "DX12_Buffer_Upload: buffer missing RHI_BUFFER_TRANSFER_SRC usage\n");
         return false;
     }
 
@@ -60,6 +95,7 @@ static bool DX12_Buffer_Upload(RHI_Device device, RHI_Buffer_Impl *impl, size_t 
     D3D12_RANGE readRange = {0, 0};
     HRESULT hr = buffer->resource->lpVtbl->Map(buffer->resource, 0, &readRange, &mapped);
     if (FAILED(hr)) {
+        fprintf(stderr, "DX12_Buffer_Upload: Map failed: hr=0x%08lX\n", (unsigned long)hr);
         return false;
     }
     memcpy((uint8_t *)mapped + offset, data, size);
@@ -80,6 +116,7 @@ static bool DX12_Buffer_Copy(RHI_Device device,
 
     if (dstOffset > dst->base.size || size > dst->base.size - dstOffset ||
         srcOffset > src->base.size || size > src->base.size - srcOffset) {
+        fprintf(stderr, "DX12_Buffer_Copy: offset/size out of bounds\n");
         return false;
     }
 
@@ -89,7 +126,10 @@ static bool DX12_Buffer_Copy(RHI_Device device,
     }
     DX12Device *dxDevice = (DX12Device *)*deviceImpl;
 
-    return DX12_CopyBufferRegionAndWait(dxDevice, dst->resource, dstOffset, src->resource, srcOffset, size);
+    bool copied = DX12_CopyBufferRegionAndWait(dxDevice, dst->resource, dstOffset, src->resource, srcOffset, size,
+                                               &dst->state, &src->state);
+    if (copied) dst->state = D3D12_RESOURCE_STATE_COMMON;
+    return copied;
 }
 
 static const RHI_Buffer_Vtable dx12BufferVtable = {
@@ -113,6 +153,7 @@ bool DX12_Buffer_Create(RHI_Device device, const RHI_BufferDesc *desc, RHI_Buffe
     buffer->base.vtable = &dx12BufferVtable;
     buffer->base.size = desc->size;
     buffer->base.usage = desc->usage;
+    buffer->state = (desc->usage & RHI_BUFFER_TRANSFER_SRC) ? D3D12_RESOURCE_STATE_GENERIC_READ : D3D12_RESOURCE_STATE_COMMON;
 
     const bool isCpuStaging = (desc->usage & RHI_BUFFER_TRANSFER_SRC) != 0;
 
@@ -129,6 +170,7 @@ bool DX12_Buffer_Create(RHI_Device device, const RHI_BufferDesc *desc, RHI_Buffe
     resourceDesc.MipLevels = 1;
     resourceDesc.SampleDesc.Count = 1;
     resourceDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    if (desc->usage & RHI_BUFFER_STORAGE) resourceDesc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
 
     const D3D12_RESOURCE_STATES initialState = isCpuStaging ? D3D12_RESOURCE_STATE_GENERIC_READ
                                                               : D3D12_RESOURCE_STATE_COMMON;
@@ -139,6 +181,9 @@ bool DX12_Buffer_Create(RHI_Device device, const RHI_BufferDesc *desc, RHI_Buffe
         (void **)&buffer->resource
     );
     if (FAILED(hr)) {
+        fprintf(stderr, "CreateCommittedResource (buffer, size=%zu, usage=0x%X) failed: hr=0x%08lX\n",
+                desc->size, desc->usage, (unsigned long)hr);
+        DX12_DumpDebugMessages(dxDevice->device);
         free(buffer);
         return false;
     }
@@ -336,8 +381,79 @@ static void DX12_Image_Destroy(RHI_Image_Impl *self) {
     free(image);
 }
 
+static bool DX12_Image_Upload(RHI_Device device, RHI_Image_Impl* impl, uint32_t mipLevel, const void* data, size_t dataSize) {
+    if (!impl || !data || mipLevel != 0) return false;
+    RHI_Device_Impl** deviceImpl = RHI_Device_Get_Impl(device);
+    if (!deviceImpl || !*deviceImpl) return false;
+    DX12Device* dxDevice = (DX12Device*)*deviceImpl;
+    DX12Image* image = (DX12Image*)impl;
+    if (image->base.info.sampleCount > 1) return false;
+    if (image->state != D3D12_RESOURCE_STATE_COMMON) return false;
+    D3D12_RESOURCE_DESC textureDesc = {0};
+    image->resource->lpVtbl->GetDesc(image->resource, &textureDesc);
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint;
+    UINT rows = 0;
+    UINT64 rowSize = 0, uploadSize = 0;
+    dxDevice->device->lpVtbl->GetCopyableFootprints(dxDevice->device, &textureDesc, 0, 1, 0, &footprint, &rows, &rowSize, &uploadSize);
+    if (!rows || rowSize > SIZE_MAX || rowSize > SIZE_MAX / rows || dataSize < (size_t)rowSize * rows) return false;
+    D3D12_HEAP_PROPERTIES heap = {0};
+    heap.Type = D3D12_HEAP_TYPE_UPLOAD;
+    heap.CreationNodeMask = 1;
+    heap.VisibleNodeMask = 1;
+    D3D12_RESOURCE_DESC bufferDesc = {0};
+    bufferDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    bufferDesc.Width = uploadSize;
+    bufferDesc.Height = 1;
+    bufferDesc.DepthOrArraySize = 1;
+    bufferDesc.MipLevels = 1;
+    bufferDesc.SampleDesc.Count = 1;
+    bufferDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    ID3D12Resource* staging = NULL;
+    HRESULT hr = dxDevice->device->lpVtbl->CreateCommittedResource(dxDevice->device, &heap, D3D12_HEAP_FLAG_NONE,
+        &bufferDesc, D3D12_RESOURCE_STATE_GENERIC_READ, NULL, &IID_ID3D12Resource, (void**)&staging);
+    if (FAILED(hr)) return false;
+    uint8_t* mapped = NULL;
+    D3D12_RANGE readRange = {0, 0};
+    hr = staging->lpVtbl->Map(staging, 0, &readRange, (void**)&mapped);
+    if (FAILED(hr)) { staging->lpVtbl->Release(staging); return false; }
+    const uint8_t* src = (const uint8_t*)data;
+    for (UINT row = 0; row < rows; ++row) memcpy(mapped + footprint.Offset + row * footprint.Footprint.RowPitch, src + row * rowSize, (size_t)rowSize);
+    staging->lpVtbl->Unmap(staging, 0, NULL);
+    if (!DX12_CommandList_Begin(&dxDevice->transferCommandList, 0)) { staging->lpVtbl->Release(staging); return false; }
+    ID3D12GraphicsCommandList* list = dxDevice->transferCommandList.list;
+    D3D12_RESOURCE_BARRIER barrier = {0};
+    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    barrier.Transition.pResource = image->resource;
+    barrier.Transition.StateBefore = image->state;
+    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    list->lpVtbl->ResourceBarrier(list, 1, &barrier);
+    D3D12_TEXTURE_COPY_LOCATION dst = {0}, srcLoc = {0};
+    dst.pResource = image->resource;
+    dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    srcLoc.pResource = staging;
+    srcLoc.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    srcLoc.PlacedFootprint = footprint;
+    list->lpVtbl->CopyTextureRegion(list, &dst, 0, 0, 0, &srcLoc, NULL);
+    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COMMON;
+    list->lpVtbl->ResourceBarrier(list, 1, &barrier);
+    DX12_CommandList_End(&dxDevice->transferCommandList, dxDevice->transferQueue);
+    UINT64 fence = dxDevice->nextTransferFenceValue++;
+    hr = dxDevice->transferQueue->lpVtbl->Signal(dxDevice->transferQueue, dxDevice->transferFence, fence);
+    if (SUCCEEDED(hr) && dxDevice->transferFence->lpVtbl->GetCompletedValue(dxDevice->transferFence) < fence) {
+        dxDevice->transferFence->lpVtbl->SetEventOnCompletion(dxDevice->transferFence, fence, dxDevice->transferFenceEvent);
+        WaitForSingleObject(dxDevice->transferFenceEvent, INFINITE);
+    }
+    image->state = D3D12_RESOURCE_STATE_COMMON;
+    staging->lpVtbl->Release(staging);
+    return SUCCEEDED(hr);
+}
+
 static const RHI_Image_Vtable dx12ImageVtable = {
     .destroy = DX12_Image_Destroy,
+    .upload = DX12_Image_Upload,
+    .resize = DX12_Image_Resize,
 };
 
 bool DX12_Image_Create(RHI_Device device, const RHI_ImageDesc *desc, RHI_Image_Impl **out) {
@@ -350,8 +466,12 @@ bool DX12_Image_Create(RHI_Device device, const RHI_ImageDesc *desc, RHI_Image_I
     DXGI_FORMAT viewFormat = DX12_ImageFormat_To_DXGI(desc->format);
     const bool isDepthFormat = DX12_IsDepthFormat(desc->format);
     const bool isBlockCompressed = DX12_IsBlockCompressedFormat(desc->format);
+    const uint32_t sampleCount = desc->sampleCount ? desc->sampleCount : 1;
     
-    if (viewFormat == DXGI_FORMAT_UNKNOWN || (desc->renderTarget && (isDepthFormat || isBlockCompressed))) {
+    if (viewFormat == DXGI_FORMAT_UNKNOWN ||
+        ((desc->renderTarget || desc->storage) && (isDepthFormat || isBlockCompressed)) ||
+        (sampleCount > 1 && ((sampleCount & (sampleCount - 1)) || desc->storage || !desc->renderTarget))) {
+        fprintf(stderr, "DX12_Image_Create: unsupported format/renderTarget combination (format=%d)\n", (int)desc->format);
         return false;
     }
 
@@ -364,8 +484,24 @@ bool DX12_Image_Create(RHI_Device device, const RHI_ImageDesc *desc, RHI_Image_I
         !(formatSupport.Support1 & D3D12_FORMAT_SUPPORT1_TEXTURE2D) ||
         (desc->renderTarget && !(formatSupport.Support1 & D3D12_FORMAT_SUPPORT1_RENDER_TARGET)) ||
         (isDepthFormat && !(formatSupport.Support1 & D3D12_FORMAT_SUPPORT1_DEPTH_STENCIL)) ||
+        (desc->storage && !(formatSupport.Support1 & D3D12_FORMAT_SUPPORT1_TYPED_UNORDERED_ACCESS_VIEW)) ||
         (desc->sampled && !(formatSupport.Support1 & D3D12_FORMAT_SUPPORT1_SHADER_SAMPLE))) {
+        fprintf(stderr, "DX12_Image_Create: CheckFeatureSupport failed or format unsupported for requested usage (format=%d, hr=0x%08lX)\n",
+                (int)desc->format, (unsigned long)hr);
+        if (FAILED(hr)) {
+            DX12_DumpDebugMessages(dxDevice->device);
+        }
         return false;
+    }
+
+    if (sampleCount > 1) {
+        if (!(formatSupport.Support1 & D3D12_FORMAT_SUPPORT1_MULTISAMPLE_RESOLVE)) return false;
+        D3D12_FEATURE_DATA_MULTISAMPLE_QUALITY_LEVELS quality = {0};
+        quality.Format = viewFormat;
+        quality.SampleCount = sampleCount;
+        hr = dxDevice->device->lpVtbl->CheckFeatureSupport(dxDevice->device,
+            D3D12_FEATURE_MULTISAMPLE_QUALITY_LEVELS, &quality, sizeof(quality));
+        if (FAILED(hr) || quality.NumQualityLevels == 0) return false;
     }
 
     DX12Image *image = calloc(1, sizeof(*image));
@@ -374,8 +510,11 @@ bool DX12_Image_Create(RHI_Device device, const RHI_ImageDesc *desc, RHI_Image_I
     }
     
     image->base.vtable = &dx12ImageVtable;
-    image->base.info = (RHI_ImageInfo){desc->width, desc->height, desc->format};
+    image->base.info = (RHI_ImageInfo){desc->width, desc->height, desc->format, sampleCount};
     image->state = D3D12_RESOURCE_STATE_COMMON;
+    image->storage = desc->storage;
+    image->renderTarget = desc->renderTarget;
+    image->sampled = desc->sampled;
 
     D3D12_HEAP_PROPERTIES heapProperties = {0};
     heapProperties.Type = D3D12_HEAP_TYPE_DEFAULT;
@@ -389,7 +528,7 @@ bool DX12_Image_Create(RHI_Device device, const RHI_ImageDesc *desc, RHI_Image_I
     resourceDesc.DepthOrArraySize = 1;
     resourceDesc.MipLevels = 1;
     resourceDesc.Format = DX12_GetResourceFormat(desc->format);
-    resourceDesc.SampleDesc.Count = 1;
+    resourceDesc.SampleDesc.Count = sampleCount;
     resourceDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
     
     if (isDepthFormat) {
@@ -397,6 +536,7 @@ bool DX12_Image_Create(RHI_Device device, const RHI_ImageDesc *desc, RHI_Image_I
     } else if (desc->renderTarget) {
         resourceDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
     }
+    if (desc->storage) resourceDesc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
 
     D3D12_CLEAR_VALUE clearValue = {0};
     clearValue.Format = viewFormat;
@@ -408,6 +548,9 @@ bool DX12_Image_Create(RHI_Device device, const RHI_ImageDesc *desc, RHI_Image_I
         &IID_ID3D12Resource, (void **)&image->resource
     );
     if (FAILED(hr)) {
+        fprintf(stderr, "CreateCommittedResource (image, %ux%u, format=%d) failed: hr=0x%08lX\n",
+                desc->width, desc->height, (int)desc->format, (unsigned long)hr);
+        DX12_DumpDebugMessages(dxDevice->device);
         free(image);
         return false;
     }
@@ -421,6 +564,9 @@ bool DX12_Image_Create(RHI_Device device, const RHI_ImageDesc *desc, RHI_Image_I
             dxDevice->device, &heapDesc, &IID_ID3D12DescriptorHeap, (void **)&image->rtvHeap
         );
         if (FAILED(hr)) {
+            fprintf(stderr, "CreateDescriptorHeap (image %s) failed: hr=0x%08lX\n",
+                    isDepthFormat ? "DSV" : "RTV", (unsigned long)hr);
+            DX12_DumpDebugMessages(dxDevice->device);
             DX12_Image_Destroy(&image->base);
             return false;
         }
@@ -434,15 +580,17 @@ bool DX12_Image_Create(RHI_Device device, const RHI_ImageDesc *desc, RHI_Image_I
         }
     }
 
-    if (desc->sampled) {
+    if (desc->sampled || desc->storage) {
         D3D12_DESCRIPTOR_HEAP_DESC heapDesc = {0};
         heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-        heapDesc.NumDescriptors = 1;
+        heapDesc.NumDescriptors = desc->sampled && desc->storage ? 2 : 1;
         
         hr = dxDevice->device->lpVtbl->CreateDescriptorHeap(
             dxDevice->device, &heapDesc, &IID_ID3D12DescriptorHeap, (void **)&image->srvHeap
         );
         if (FAILED(hr)) {
+            fprintf(stderr, "CreateDescriptorHeap (image SRV) failed: hr=0x%08lX\n", (unsigned long)hr);
+            DX12_DumpDebugMessages(dxDevice->device);
             DX12_Image_Destroy(&image->base);
             return false;
         }
@@ -450,15 +598,75 @@ bool DX12_Image_Create(RHI_Device device, const RHI_ImageDesc *desc, RHI_Image_I
         D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {0};
         srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
         srvDesc.Format = DX12_GetShaderResourceFormat(desc->format);
-        srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-        srvDesc.Texture2D.MipLevels = 1;
+        if (sampleCount > 1) {
+            srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DMS;
+        } else {
+            srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+            srvDesc.Texture2D.MipLevels = 1;
+        }
 
         D3D12_CPU_DESCRIPTOR_HANDLE srvHandle;
         image->srvHeap->lpVtbl->GetCPUDescriptorHandleForHeapStart(image->srvHeap, &srvHandle);
-        dxDevice->device->lpVtbl->CreateShaderResourceView(dxDevice->device, image->resource, &srvDesc, srvHandle);
+        if (desc->sampled) dxDevice->device->lpVtbl->CreateShaderResourceView(dxDevice->device, image->resource, &srvDesc, srvHandle);
+        if (desc->storage) {
+            image->uav = srvHandle;
+            if (desc->sampled) image->uav.ptr += dxDevice->device->lpVtbl->GetDescriptorHandleIncrementSize(dxDevice->device, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+            D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {0};
+            uavDesc.Format = viewFormat;
+            uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+            dxDevice->device->lpVtbl->CreateUnorderedAccessView(dxDevice->device, image->resource, NULL, &uavDesc, image->uav);
+        }
     }
 
     *out = &image->base;
+    return true;
+}
+
+bool DX12_Image_Resize(RHI_Device device, RHI_Image_Impl* impl, uint32_t width, uint32_t height) {
+    if (!impl || !width || !height) return false;
+    DX12Image* image = (DX12Image*)impl;
+    if (image->owner) return false;
+    if (image->base.info.width == width && image->base.info.height == height) return true;
+    RHI_Device_Impl** deviceImpl = RHI_Device_Get_Impl(device);
+    if (!deviceImpl || !*deviceImpl) return false;
+    DX12Device* dxDevice = (DX12Device*)*deviceImpl;
+    if (dxDevice->frameRecording || dxDevice->hasActiveRenderPass) return false;
+
+    UINT64 fenceValue = dxDevice->nextFrameFenceValue++;
+    HRESULT hr = dxDevice->graphicsQueue->lpVtbl->Signal(dxDevice->graphicsQueue, dxDevice->frameFence, fenceValue);
+    if (FAILED(hr)) return false;
+    if (dxDevice->frameFence->lpVtbl->GetCompletedValue(dxDevice->frameFence) < fenceValue) {
+        hr = dxDevice->frameFence->lpVtbl->SetEventOnCompletion(dxDevice->frameFence, fenceValue, dxDevice->frameFenceEvent);
+        if (FAILED(hr)) return false;
+        WaitForSingleObject(dxDevice->frameFenceEvent, INFINITE);
+    }
+
+    RHI_ImageDesc desc = {
+        .width = width,
+        .height = height,
+        .format = image->base.info.format,
+        .renderTarget = image->renderTarget,
+        .sampled = image->sampled,
+        .storage = image->storage,
+        .sampleCount = image->base.info.sampleCount,
+    };
+    RHI_Image_Impl* replacementImpl = NULL;
+    if (!DX12_Image_Create(device, &desc, &replacementImpl)) return false;
+
+    ID3D12Resource* oldResource = image->resource;
+    ID3D12DescriptorHeap* oldRtvHeap = image->rtvHeap;
+    ID3D12DescriptorHeap* oldSrvHeap = image->srvHeap;
+    for (uint32_t i = 0; i < RHI_PIPELINE_MAX_BINDINGS; ++i) {
+        if (dxDevice->boundUavResources[i] == oldResource) {
+            dxDevice->boundUavResources[i] = NULL;
+            dxDevice->pendingUavWrites[i] = false;
+        }
+    }
+    *image = *(DX12Image*)replacementImpl;
+    free(replacementImpl);
+    if (oldSrvHeap) oldSrvHeap->lpVtbl->Release(oldSrvHeap);
+    if (oldRtvHeap) oldRtvHeap->lpVtbl->Release(oldRtvHeap);
+    if (oldResource) oldResource->lpVtbl->Release(oldResource);
     return true;
 }
 
@@ -560,6 +768,8 @@ bool DX12_Sampler_Create(RHI_Device device, const RHI_SamplerDesc *desc, RHI_Sam
         dxDevice->device, &heapDesc, &IID_ID3D12DescriptorHeap, (void **)&sampler->heap
     );
     if (FAILED(hr)) {
+        fprintf(stderr, "CreateDescriptorHeap (sampler) failed: hr=0x%08lX\n", (unsigned long)hr);
+        DX12_DumpDebugMessages(dxDevice->device);
         free(sampler);
         return false;
     }

@@ -8,6 +8,23 @@
 RHI_Device RHI_Device_Create(RHI_Instance instance);
 void RHI_Device_Destroy(RHI_Device handle);
 
+typedef enum RHI_DeviceFeature {
+    RHI_DEVICE_FEATURE_COMPUTE,
+    RHI_DEVICE_FEATURE_GEOMETRY_SHADER,
+    RHI_DEVICE_FEATURE_TESSELLATION_SHADER,
+    RHI_DEVICE_FEATURE_SAMPLER_ANISOTROPY,
+    RHI_DEVICE_FEATURE_STORAGE_IMAGE,
+    RHI_DEVICE_FEATURE_PUSH_CONSTANTS,
+    RHI_DEVICE_FEATURE_MULTISAMPLE_2X,
+    RHI_DEVICE_FEATURE_MULTISAMPLE_4X,
+    RHI_DEVICE_FEATURE_MULTISAMPLE_8X,
+    RHI_DEVICE_FEATURE_MULTISAMPLE_16X,
+} RHI_DeviceFeature;
+
+bool RHI_Device_Supports(RHI_Device device, RHI_DeviceFeature feature);
+bool RHI_Device_Supports_Image_Sample_Count(RHI_Device device, RHI_ImageFormat format,
+                                            uint32_t sampleCount);
+
 bool RHI_Device_Begin_Frame(RHI_Device device, uint32_t frameIndex);
 void RHI_Device_End_Frame(RHI_Device device);
 
@@ -18,5 +35,11 @@ void RHI_Device_Dispatch(RHI_Device device, uint32_t groupCountX, uint32_t group
 bool RHI_Device_Bind_Vertex_Buffer(RHI_Device device, uint32_t slot, RHI_Buffer buffer, uint32_t stride);
 bool RHI_Device_Bind_Index_Buffer(RHI_Device device, RHI_Buffer buffer, bool index32Bit);
 void RHI_Device_Draw_Indexed(RHI_Device device, uint32_t indexCount, uint32_t instanceCount, uint32_t firstIndex, int32_t vertexOffset, uint32_t firstInstance);
+
+bool RHI_Device_Bind_Buffer(RHI_Device device, uint32_t binding, RHI_Buffer buffer);
+bool RHI_Device_Bind_Image(RHI_Device device, uint32_t binding, RHI_Image image);
+bool RHI_Device_Bind_Sampler(RHI_Device device, uint32_t binding, RHI_Sampler sampler);
+bool RHI_Device_Bind_Push_Constants(RHI_Device device, uint32_t offset,
+                                    uint32_t size, const void* data);
 
 #endif

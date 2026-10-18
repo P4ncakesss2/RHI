@@ -6,6 +6,9 @@
 #ifdef RHI_BACKEND_DX12_AVAILABLE
 #include "dx12/dx12.h"
 #endif
+#ifdef RHI_BACKEND_VULKAN_AVAILABLE
+#include "vulkan/vulkan_backend.h"
+#endif
 
 DEFINE_HANDLE_POOL(RHI_Buffer, RHI_Buffer_Impl*);
 static RHI_BufferPool s_buffers;
@@ -27,6 +30,11 @@ RHI_Buffer RHI_Buffer_Create(RHI_Instance instance, RHI_Device device, const RHI
         case RHI_BACKEND_DX12:
 #ifdef RHI_BACKEND_DX12_AVAILABLE
             ok = DX12_Buffer_Create(device, desc, p);
+#endif
+            break;
+        case RHI_BACKEND_VULKAN:
+#ifdef RHI_BACKEND_VULKAN_AVAILABLE
+            ok = Vulkan_Buffer_Create(device, desc, p);
 #endif
             break;
         default:

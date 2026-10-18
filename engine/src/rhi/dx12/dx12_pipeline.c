@@ -4,6 +4,7 @@
 #include "rhi/image_internal.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <limits.h>
 
 #include <d3d12.h>
@@ -20,24 +21,140 @@ static const RHI_PipelineLayout_Vtable dx12PipelineLayoutVtable = {
     .destroy = DX12_PipelineLayout_Destroy,
 };
 
-bool DX12_PipelineLayout_Create(RHI_Device device, const RHI_PipelineLayoutDesc* desc, RHI_PipelineLayout_Impl** outLayout) {
-    (void)desc; // TODO
+static D3D12_SHADER_VISIBILITY DX12_StageMaskToVisibility(RHI_ShaderStageMask mask) {
+    (void)mask;
+    return D3D12_SHADER_VISIBILITY_ALL;
+}
 
+bool DX12_PipelineLayout_Create(RHI_Device device, const RHI_PipelineLayoutDesc* desc, RHI_PipelineLayout_Impl** outLayout) {
+    if (!desc || !outLayout || (desc->bindingCount && !desc->bindings) ||
+        (desc->pushConstantSize && (desc->pushConstantSize % 4 || desc->pushConstantSize > 256))) {
+        return false;
+    }
     RHI_Device_Impl** device_impl = RHI_Device_Get_Impl(device);
     if (!device_impl || !*device_impl) {
         return false;
     }
     DX12Device* dxDevice = (DX12Device*)*device_impl;
 
+    uint32_t bindingCount = desc ? desc->bindingCount : 0;
+    if (bindingCount > RHI_PIPELINE_MAX_BINDINGS) {
+        fprintf(stderr, "DX12_PipelineLayout_Create: bindingCount %u exceeds RHI_PIPELINE_MAX_BINDINGS\n", bindingCount);
+        return false;
+    }
+
     DX12PipelineLayout* layout = calloc(1, sizeof(DX12PipelineLayout));
     if (!layout) {
         return false;
     }
     layout->base.vtable = &dx12PipelineLayoutVtable;
+    layout->slotCount = bindingCount;
+
+    D3D12_ROOT_PARAMETER params[RHI_PIPELINE_MAX_BINDINGS + 1];
+    D3D12_DESCRIPTOR_RANGE ranges[RHI_PIPELINE_MAX_BINDINGS];
+    memset(params, 0, sizeof(params));
+    memset(ranges, 0, sizeof(ranges));
+
+    for (uint32_t i = 0; i < bindingCount; ++i) {
+        const RHI_PipelineBinding* b = &desc->bindings[i];
+        D3D12_SHADER_VISIBILITY vis = DX12_StageMaskToVisibility(b->stageMask);
+
+        layout->slots[i].binding = b->binding;
+        layout->slots[i].rootParameterIndex = i;
+        layout->slots[i].type = b->type;
+
+        switch (b->type) {
+            case RHI_BINDING_UNIFORM_BUFFER:
+                params[i].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+                params[i].Descriptor.ShaderRegister = b->binding;
+                params[i].Descriptor.RegisterSpace = 0;
+                params[i].ShaderVisibility = vis;
+                break;
+            case RHI_BINDING_STORAGE_BUFFER:
+                params[i].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
+                params[i].Descriptor.ShaderRegister = b->binding;
+                params[i].Descriptor.RegisterSpace = 0;
+                params[i].ShaderVisibility = vis;
+                break;
+            case RHI_BINDING_STORAGE_BUFFER_UAV:
+                params[i].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
+                params[i].Descriptor.ShaderRegister = b->binding;
+                params[i].Descriptor.RegisterSpace = 0;
+                params[i].ShaderVisibility = vis;
+                break;
+            case RHI_BINDING_STORAGE_IMAGE:
+                ranges[i].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
+                ranges[i].NumDescriptors = 1;
+                ranges[i].BaseShaderRegister = b->binding;
+                ranges[i].RegisterSpace = 0;
+                ranges[i].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+                params[i].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+                params[i].DescriptorTable.NumDescriptorRanges = 1;
+                params[i].DescriptorTable.pDescriptorRanges = &ranges[i];
+                params[i].ShaderVisibility = vis;
+                break;
+            case RHI_BINDING_SAMPLED_IMAGE:
+                ranges[i].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+                ranges[i].NumDescriptors = 1;
+                ranges[i].BaseShaderRegister = b->binding;
+                ranges[i].RegisterSpace = 0;
+                ranges[i].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+                params[i].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+                params[i].DescriptorTable.NumDescriptorRanges = 1;
+                params[i].DescriptorTable.pDescriptorRanges = &ranges[i];
+                params[i].ShaderVisibility = vis;
+                break;
+            case RHI_BINDING_SAMPLER:
+                ranges[i].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER;
+                ranges[i].NumDescriptors = 1;
+                ranges[i].BaseShaderRegister = b->binding;
+                ranges[i].RegisterSpace = 0;
+                ranges[i].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+                params[i].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+                params[i].DescriptorTable.NumDescriptorRanges = 1;
+                params[i].DescriptorTable.pDescriptorRanges = &ranges[i];
+                params[i].ShaderVisibility = vis;
+                break;
+            default:
+                fprintf(stderr, "DX12_PipelineLayout_Create: unknown binding type %d at index %u\n", (int)b->type, i);
+                free(layout);
+                return false;
+        }
+    }
+
+    uint32_t parameterCount = bindingCount;
+    uint32_t rootCost = 0;
+    for (uint32_t i = 0; i < bindingCount; ++i) {
+        switch (desc->bindings[i].type) {
+            case RHI_BINDING_UNIFORM_BUFFER:
+            case RHI_BINDING_STORAGE_BUFFER:
+            case RHI_BINDING_STORAGE_BUFFER_UAV:
+                rootCost += 2;
+                break;
+            default:
+                rootCost += 1;
+                break;
+        }
+    }
+    if (desc->pushConstantSize) {
+        rootCost += desc->pushConstantSize / 4;
+        if (rootCost > 64) {
+            free(layout);
+            return false;
+        }
+        layout->pushConstantParameter = parameterCount;
+        layout->pushConstantSize = desc->pushConstantSize;
+        params[parameterCount].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+        params[parameterCount].Constants.ShaderRegister = 31;
+        params[parameterCount].Constants.RegisterSpace = 0;
+        params[parameterCount].Constants.Num32BitValues = desc->pushConstantSize / 4;
+        params[parameterCount].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+        ++parameterCount;
+    }
 
     D3D12_ROOT_SIGNATURE_DESC rootDesc = {0};
-    rootDesc.NumParameters = 0;
-    rootDesc.pParameters = NULL;
+    rootDesc.NumParameters = parameterCount;
+    rootDesc.pParameters = parameterCount ? params : NULL;
     rootDesc.NumStaticSamplers = 0;
     rootDesc.pStaticSamplers = NULL;
     rootDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
@@ -47,11 +164,13 @@ bool DX12_PipelineLayout_Create(RHI_Device device, const RHI_PipelineLayoutDesc*
     HRESULT hr = D3D12SerializeRootSignature(&rootDesc, D3D_ROOT_SIGNATURE_VERSION_1,
                                             &signatureBlob, &errorBlob);
     if (FAILED(hr)) {
+        fprintf(stderr, "D3D12SerializeRootSignature failed: hr=0x%08lX\n", (unsigned long)hr);
         if (errorBlob) {
             fprintf(stderr, "Root signature serialization failed: %s\n",
                     (const char*)errorBlob->lpVtbl->GetBufferPointer(errorBlob));
             errorBlob->lpVtbl->Release(errorBlob);
         }
+        DX12_DumpDebugMessages(dxDevice->device);
         free(layout);
         return false;
     }
@@ -67,6 +186,8 @@ bool DX12_PipelineLayout_Create(RHI_Device device, const RHI_PipelineLayoutDesc*
     signatureBlob->lpVtbl->Release(signatureBlob);
 
     if (FAILED(hr)) {
+        fprintf(stderr, "CreateRootSignature failed: hr=0x%08lX\n", (unsigned long)hr);
+        DX12_DumpDebugMessages(dxDevice->device);
         free(layout);
         return false;
     }
@@ -162,11 +283,13 @@ static DXGI_FORMAT DX12_ImageFormat(RHI_ImageFormat f) {
 
 bool DX12_Pipeline_Create(RHI_Device device, const RHI_PipelineDesc* desc, RHI_Pipeline_Impl** outPipeline) {
     if (!desc || !outPipeline || !desc->stages || desc->stageCount == 0) {
+        fprintf(stderr, "DX12_Pipeline_Create: invalid desc/outPipeline/stages\n");
         return false;
     }
     
     for (uint32_t i = 0; i < desc->stageCount; ++i) {
         if (!desc->stages[i].code || desc->stages[i].codeSize == 0 || desc->stages[i].stage > RHI_SHADER_STAGE_COMPUTE) {
+            fprintf(stderr, "DX12_Pipeline_Create: invalid shader stage at index %u\n", i);
             return false;
         }
     }
@@ -179,6 +302,7 @@ bool DX12_Pipeline_Create(RHI_Device device, const RHI_PipelineDesc* desc, RHI_P
 
     RHI_PipelineLayout_Impl** layout_impl = RHI_PipelineLayout_Get_Impl(desc->layout);
     if (!layout_impl || !*layout_impl) {
+        fprintf(stderr, "DX12_Pipeline_Create: invalid pipeline layout\n");
         return false;
     }
     DX12PipelineLayout* dxLayout = (DX12PipelineLayout*)*layout_impl;
@@ -186,6 +310,7 @@ bool DX12_Pipeline_Create(RHI_Device device, const RHI_PipelineDesc* desc, RHI_P
     const RHI_ShaderStageDesc* cs = DX12_FindStage(desc, RHI_SHADER_STAGE_COMPUTE);
     if (cs) {
         if (desc->stageCount != 1 || !cs->code || !cs->codeSize) {
+            fprintf(stderr, "DX12_Pipeline_Create: compute pipeline must have exactly one valid compute stage\n");
             return false;
         }
         
@@ -196,6 +321,7 @@ bool DX12_Pipeline_Create(RHI_Device device, const RHI_PipelineDesc* desc, RHI_P
         
         pipeline->base.vtable = &dx12PipelineVtable;
         pipeline->rootSignature = dxLayout->rootSignature;
+        pipeline->layout = dxLayout;
         pipeline->isCompute = true;
         
         D3D12_COMPUTE_PIPELINE_STATE_DESC computeDesc = {0};
@@ -207,6 +333,8 @@ bool DX12_Pipeline_Create(RHI_Device device, const RHI_PipelineDesc* desc, RHI_P
             dxDevice->device, &computeDesc, &IID_ID3D12PipelineState, (void**)&pipeline->pso
         );
         if (FAILED(computeHr)) {
+            fprintf(stderr, "CreateComputePipelineState failed: hr=0x%08lX\n", (unsigned long)computeHr);
+            DX12_DumpDebugMessages(dxDevice->device);
             free(pipeline);
             return false;
         }
@@ -230,11 +358,13 @@ bool DX12_Pipeline_Create(RHI_Device device, const RHI_PipelineDesc* desc, RHI_P
         return false;
     }
     if ((hs == NULL) != (ds == NULL)) {
+        fprintf(stderr, "Pipeline must specify both tessellation control and evaluation stages, or neither\n");
         return false;
     }
     if (desc->colorAttachmentCount > RHI_PIPELINE_MAX_COLOR_ATTACHMENTS ||
         desc->vertexAttributeCount > RHI_PIPELINE_MAX_VERTEX_ATTRIBUTES ||
         desc->sampleCount == 0) {
+        fprintf(stderr, "Pipeline desc exceeds limits or has sampleCount=0\n");
         return false;
     }
 
@@ -244,6 +374,7 @@ bool DX12_Pipeline_Create(RHI_Device device, const RHI_PipelineDesc* desc, RHI_P
     }
     pipeline->base.vtable = &dx12PipelineVtable;
     pipeline->rootSignature = dxLayout->rootSignature;
+    pipeline->layout = dxLayout;
     pipeline->topology = desc->topology;
 
     D3D12_RASTERIZER_DESC rasterizer = {0};
@@ -275,7 +406,7 @@ bool DX12_Pipeline_Create(RHI_Device device, const RHI_PipelineDesc* desc, RHI_P
     depthStencil.DepthEnable = desc->depthStencil.depthTest;
     depthStencil.DepthWriteMask = desc->depthStencil.depthWrite ? D3D12_DEPTH_WRITE_MASK_ALL : D3D12_DEPTH_WRITE_MASK_ZERO;
     depthStencil.DepthFunc = DX12_Compare(desc->depthStencil.depthCompare);
-    depthStencil.StencilEnable = FALSE;
+    depthStencil.StencilEnable = desc->depthStencil.stencilTest;
     depthStencil.StencilReadMask = D3D12_DEFAULT_STENCIL_READ_MASK;
     depthStencil.StencilWriteMask = D3D12_DEFAULT_STENCIL_WRITE_MASK;
     depthStencil.FrontFace.StencilFailOp = depthStencil.FrontFace.StencilDepthFailOp = depthStencil.FrontFace.StencilPassOp = D3D12_STENCIL_OP_KEEP;
@@ -316,6 +447,7 @@ bool DX12_Pipeline_Create(RHI_Device device, const RHI_PipelineDesc* desc, RHI_P
         inputElements[i].InputSlotClass = a->perInstance ? D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA 
                                                           : D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA;
         if (inputElements[i].Format == DXGI_FORMAT_UNKNOWN || !a->semantic) {
+            fprintf(stderr, "DX12_Pipeline_Create: invalid vertex attribute at index %u\n", i);
             free(pipeline);
             return false;
         }
@@ -343,8 +475,9 @@ bool DX12_Pipeline_Create(RHI_Device device, const RHI_PipelineDesc* desc, RHI_P
     for (uint32_t i = 0; i < desc->colorAttachmentCount; ++i) {
         psoDesc.RTVFormats[i] = DX12_ImageFormat(desc->colorFormats[i]);
     }
-    psoDesc.DSVFormat = desc->depthStencil.depthTest ? DX12_ImageFormat(desc->depthFormat) : DXGI_FORMAT_UNKNOWN;
-    if (desc->depthStencil.depthTest && psoDesc.DSVFormat == DXGI_FORMAT_UNKNOWN) {
+    psoDesc.DSVFormat = (desc->depthStencil.depthTest || desc->depthStencil.stencilTest) ? DX12_ImageFormat(desc->depthFormat) : DXGI_FORMAT_UNKNOWN;
+    if ((desc->depthStencil.depthTest || desc->depthStencil.stencilTest) && psoDesc.DSVFormat == DXGI_FORMAT_UNKNOWN) {
+        fprintf(stderr, "DX12_Pipeline_Create: depth test enabled with unknown depth format\n");
         free(pipeline);
         return false;
     }
@@ -357,6 +490,8 @@ bool DX12_Pipeline_Create(RHI_Device device, const RHI_PipelineDesc* desc, RHI_P
     );
 
     if (FAILED(hr)) {
+        fprintf(stderr, "CreateGraphicsPipelineState failed: hr=0x%08lX\n", (unsigned long)hr);
+        DX12_DumpDebugMessages(dxDevice->device);
         free(pipeline);
         return false;
     }

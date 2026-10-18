@@ -4,6 +4,7 @@
 #include "rhi/image_internal.h"
 #include "window/native_handle.h"
 #include <stdlib.h>
+#include <stdio.h>
 
 static bool DX12_Swapchain_CreateFrameSync(DX12Swapchain* sc) {
     DX12Device* dxDevice = sc->device;
@@ -11,11 +12,14 @@ static bool DX12_Swapchain_CreateFrameSync(DX12Swapchain* sc) {
     HRESULT hr = dxDevice->device->lpVtbl->CreateFence(
         dxDevice->device, 0, D3D12_FENCE_FLAG_NONE, &IID_ID3D12Fence, (void**)&sc->frameFence);
     if (FAILED(hr)) {
+        fprintf(stderr, "CreateFence (swapchain frame) failed: hr=0x%08lX\n", (unsigned long)hr);
+        DX12_DumpDebugMessages(dxDevice->device);
         return false;
     }
 
     sc->frameFenceEvent = CreateEventEx(NULL, NULL, 0, EVENT_ALL_ACCESS);
     if (!sc->frameFenceEvent) {
+        fprintf(stderr, "CreateEventEx (swapchain frame fence) failed\n");
         return false;
     }
 
@@ -59,6 +63,8 @@ static bool DX12_Swapchain_CreateRTVs(DX12Swapchain* sc, bool initialAllocation)
     HRESULT hr = dxDevice->device->lpVtbl->CreateDescriptorHeap(
         dxDevice->device, &heapDesc, &IID_ID3D12DescriptorHeap, (void**)&sc->rtvHeap);
     if (FAILED(hr)) {
+        fprintf(stderr, "CreateDescriptorHeap (swapchain RTV) failed: hr=0x%08lX\n", (unsigned long)hr);
+        DX12_DumpDebugMessages(dxDevice->device);
         return false;
     }
 
@@ -72,6 +78,8 @@ static bool DX12_Swapchain_CreateRTVs(DX12Swapchain* sc, bool initialAllocation)
         hr = sc->swapchain->lpVtbl->GetBuffer(sc->swapchain, i, &IID_ID3D12Resource,
                                               (void**)&sc->backbuffers[i]);
         if (FAILED(hr)) {
+            fprintf(stderr, "GetBuffer (swapchain backbuffer %u) failed: hr=0x%08lX\n", i, (unsigned long)hr);
+            DX12_DumpDebugMessages(dxDevice->device);
             return false;
         }
 
@@ -86,7 +94,7 @@ static bool DX12_Swapchain_CreateRTVs(DX12Swapchain* sc, bool initialAllocation)
             dxDevice->device, sc->backbuffers[i], &rtvDesc, handle);
 
         sc->rtvHandles[i] = handle;
-        sc->images[i].base.info = (RHI_ImageInfo){sc->width, sc->height, RHI_IMAGE_FORMAT_RGBA8_SRGB};
+        sc->images[i].base.info = (RHI_ImageInfo){sc->width, sc->height, RHI_IMAGE_FORMAT_RGBA8_SRGB, 1};
         sc->images[i].owner = sc;
         sc->images[i].index = i;
         sc->images[i].resource = sc->backbuffers[i];
@@ -142,6 +150,7 @@ static void DX12_Swapchain_Destroy(RHI_Swapchain_Impl* self) {
 
 static bool DX12_Swapchain_Resize(RHI_Swapchain_Impl* self, uint32_t width, uint32_t height) {
     DX12Swapchain* sc = (DX12Swapchain*)self;
+    if (width == 0 || height == 0) return true;
 
     for (UINT i = 0; i < DX12_FRAME_COUNT; ++i) {
         DX12_Swapchain_WaitForFenceValue(sc, sc->backbufferFenceValues[i]);
@@ -153,6 +162,8 @@ static bool DX12_Swapchain_Resize(RHI_Swapchain_Impl* self, uint32_t width, uint
     HRESULT hr = sc->swapchain->lpVtbl->ResizeBuffers(
         sc->swapchain, DX12_FRAME_COUNT, width, height, DXGI_FORMAT_UNKNOWN, 0);
     if (FAILED(hr)) {
+        fprintf(stderr, "ResizeBuffers (%ux%u) failed: hr=0x%08lX\n", width, height, (unsigned long)hr);
+        DX12_DumpDebugMessages(sc->device->device);
         return false;
     }
 
@@ -183,7 +194,11 @@ static RHI_Image DX12_Swapchain_GetCurrentImage(RHI_Swapchain_Impl* self) {
 static void DX12_Swapchain_PresentImpl(RHI_Swapchain_Impl* self) {
     DX12Swapchain* sc = (DX12Swapchain*)self;
 
-    sc->swapchain->lpVtbl->Present(sc->swapchain, 1 /* vsync */, 0);
+    HRESULT hr = sc->swapchain->lpVtbl->Present(sc->swapchain, 1 /* vsync */, 0);
+    if (FAILED(hr)) {
+        fprintf(stderr, "Present failed: hr=0x%08lX\n", (unsigned long)hr);
+        DX12_DumpDebugMessages(sc->device->device);
+    }
 
     UINT64 value = sc->nextFenceValue++;
     sc->device->graphicsQueue->lpVtbl->Signal(sc->device->graphicsQueue, sc->frameFence, value);
@@ -201,6 +216,7 @@ static const RHI_Swapchain_Vtable dx12SwapchainVtable = {
 bool DX12_Swapchain_Create(RHI_Device device, Window* window, RHI_Swapchain_Impl** swapchain) {
     NativeWindowHandle nativeHandle = Window_Get_Native_Handle(window);
     if (nativeHandle.platform != PLATFORM_WIN32) {
+        fprintf(stderr, "DX12_Swapchain_Create: window is not a Win32 window\n");
         return false;
     }
 
@@ -241,6 +257,8 @@ bool DX12_Swapchain_Create(RHI_Device device, Window* window, RHI_Swapchain_Impl
         sc->hwnd, &desc, NULL, NULL, &swapchain1);
 
     if (FAILED(hr)) {
+        fprintf(stderr, "CreateSwapChainForHwnd failed: hr=0x%08lX\n", (unsigned long)hr);
+        DX12_DumpDebugMessages(dxDevice->device);
         free(sc);
         return false;
     }
@@ -252,6 +270,8 @@ bool DX12_Swapchain_Create(RHI_Device device, Window* window, RHI_Swapchain_Impl
     swapchain1->lpVtbl->Release(swapchain1);
 
     if (FAILED(hr)) {
+        fprintf(stderr, "QueryInterface (IDXGISwapChain4) failed: hr=0x%08lX\n", (unsigned long)hr);
+        DX12_DumpDebugMessages(dxDevice->device);
         free(sc);
         return false;
     }

@@ -2,11 +2,12 @@
 #define RHI_IMAGE_INTERNAL_H
 #include "rhi/image.h"
 #include <stdbool.h>
-#include <dxgi1_6.h>
 
 typedef struct RHI_Image_Impl RHI_Image_Impl;
 typedef struct {
     void (*destroy)(RHI_Image_Impl* self);
+    bool (*upload)(RHI_Device device, RHI_Image_Impl* image, uint32_t mipLevel, const void* data, size_t dataSize);
+    bool (*resize)(RHI_Device device, RHI_Image_Impl* image, uint32_t width, uint32_t height);
 } RHI_Image_Vtable;
 
 struct RHI_Image_Impl { 

@@ -6,6 +6,9 @@
 #ifdef RHI_BACKEND_DX12_AVAILABLE
 #include "dx12/dx12.h"
 #endif
+#ifdef RHI_BACKEND_VULKAN_AVAILABLE
+#include "vulkan/vulkan_backend.h"
+#endif
 
 DEFINE_HANDLE_POOL(RHI_Sampler, RHI_Sampler_Impl *);
 static RHI_SamplerPool s_samplers;
@@ -34,6 +37,11 @@ RHI_Sampler RHI_Sampler_Create(RHI_Instance i, RHI_Device d,
 			ok = DX12_Sampler_Create(d, desc, p);
 	#endif
 			break;
+		case RHI_BACKEND_VULKAN:
+	#ifdef RHI_BACKEND_VULKAN_AVAILABLE
+			ok = Vulkan_Sampler_Create(d, desc, p);
+	#endif
+			break;
 	default:
 			break;
 	}
@@ -50,4 +58,8 @@ void RHI_Sampler_Destroy(RHI_Sampler h) {
 	(*p)->vtable->destroy(*p);
 	*p = NULL;
 	RHI_SamplerPool_Free(&s_samplers, h);
+}
+
+RHI_Sampler_Impl** RHI_Sampler_Get_Impl(RHI_Sampler h) {
+    return RHI_SamplerPool_Resolve(&s_samplers, h);
 }

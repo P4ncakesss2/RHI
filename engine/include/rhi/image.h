@@ -4,6 +4,7 @@
 #include "rhi/handles.h"
 #include <stdint.h>
 #include <stdbool.h>
+#include <stddef.h>
 
 typedef enum RHI_ImageFormat {
     RHI_IMAGE_FORMAT_R8_UNORM,
@@ -74,16 +75,21 @@ typedef struct RHI_ImageInfo {
     uint32_t width;
     uint32_t height;
     RHI_ImageFormat format;
+    uint32_t sampleCount;
 } RHI_ImageInfo;
 
 typedef struct RHI_ImageDesc { 
     uint32_t width, height;
     RHI_ImageFormat format;
-    bool renderTarget, sampled;
+    bool renderTarget, sampled, storage;
+    uint32_t sampleCount;
 } RHI_ImageDesc;
 
 RHI_Image RHI_Image_Create(RHI_Instance instance, RHI_Device device, const RHI_ImageDesc* desc);
 void RHI_Image_Destroy(RHI_Image image);
 RHI_ImageInfo RHI_Image_Get_Info(RHI_Image image);
+bool RHI_Image_Resize(RHI_Device device, RHI_Image image, uint32_t width, uint32_t height);
+bool RHI_Image_Upload(RHI_Instance instance, RHI_Device device, RHI_Image image,
+                      uint32_t mipLevel, const void* data, size_t dataSize);
 
 #endif
